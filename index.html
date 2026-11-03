@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>الكيان الأسطوري</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0b0b14;font-family:system-ui,sans-serif;color:#fff}
+  video,canvas{position:fixed;inset:0;width:100%;height:100%;object-fit:cover}
+  canvas{touch-action:none}
+  #cam{display:none;background:#000}
+  body{background:radial-gradient(#3a2a5a,#0b0b14)}
+  #hud{position:fixed;top:0;left:0;right:0;padding:10px 12px;background:linear-gradient(#000a,#0000);font-size:14px;pointer-events:none}
+  #bar{height:6px;background:#fff3;border-radius:4px;margin:6px 0;overflow:hidden}
+  #fill{height:100%;width:0;background:#ffd24a;transition:width .3s}
+  #mission{position:fixed;bottom:14px;left:12px;right:12px;background:#000a;border-radius:12px;padding:10px 12px;font-size:14px}
+  #start{position:fixed;inset:0;background:radial-gradient(#2a1a4a,#0b0b14);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;text-align:center;z-index:5}
+  #start h1{margin:0;font-size:26px}
+  input{padding:12px;border-radius:10px;border:0;font-size:16px;width:80%;text-align:center}
+  .types{display:flex;gap:10px}
+  .t{padding:10px 14px;border-radius:12px;background:#fff2;border:2px solid transparent;font-size:15px}
+  .t.on{border-color:#ffd24a}
+  button{padding:14px 28px;border:0;border-radius:12px;background:#ffd24a;color:#222;font-size:17px;font-weight:700}
+  #toast{position:fixed;top:30%;left:0;right:0;text-align:center;font-size:22px;font-weight:700;text-shadow:0 2px 8px #000;opacity:0;transition:opacity .4s;pointer-events:none}
+</style>
+</head>
+<body>
+<video id="cam" playsinline muted autoplay></video>
+<canvas id="gl"></canvas>
+<div id="hud" hidden>
+  <div><b id="pname"></b> · <span id="rank"></span> · مستوى <span id="lvl">1</span> · 🪙 <span id="coins">0</span></div>
+  <div id="bar"><div id="fill"></div></div>
+</div>
+<div id="mission" hidden></div>
+<div id="toast"></div>
+<div id="dbg" style="position:fixed;bottom:62px;left:12px;right:12px;font-size:11px;color:#fff;background:#0008;border-radius:8px;padding:4px 8px;text-align:center;pointer-events:none;z-index:4;direction:rtl"></div>
+
+<div id="start">
+  <h1>🐉 كيانك الأسطوري</h1>
+  <input id="nm" placeholder="اسم شخصيتك" maxlength="14">
+  <div>اختار عنصر الكيان</div>
+  <div class="types">
+    <div class="t on" data-c="0xff5a2a">🔥 نار</div>
+    <div class="t" data-c="0x4ac8ff">❄️ جليد</div>
+    <div class="t" data-c="0xb06aff">⚡ عاصفة</div>
+  </div>
+  <button id="go">ابدأ</button>
+  <small>هيطلب إذن الكاميرا والحركة</small>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+const RANKS=["مبتدئ","حارس","فارس","قائد","أسطورة"];
+const MISSIONS=[
+  {t:"داعب كيانك 5 مرات",n:5,r:20},
+  {t:"داعب كيانك 12 مرة",n:12,r:50},
+  {t:"داعب كيانك 25 مرة",n:25,r:120}
+];
+let S=JSON.parse(localStorage.getItem("lp_save")||"null");
+let color=0xff5a2a;
+document.querySelectorAll(".t").forEach(e=>e.onclick=()=>{
+  document.querySelectorAll(".t").forEach(x=>x.classList.remove("on"));
+  e.classList.add("on"); color=+e.dataset.c;
+});
+if(S){ $("nm").value=S.name; color=S.color; }
+
+function save(){ localStorage.setItem("lp_save",JSON.stringify(S)); }
+function toast(m){ const t=$("toast"); t.textContent=m; t.style.opacity=1; setTimeout(()=>t.style.opacity=0,1400); }
+
+// ---------- 3D ----------
+let renderer,scene,camera,pet,wings=[],tail=[],base={x:1.15,y:-1.55},tilt={x:0,y:0},happy=0,t0=0;
+function build(){
+  renderer=new THREE.WebGLRenderer({canvas:$("gl"),alpha:true,antialias:false});
+  renderer.setPixelRatio(Math.min(devicePixelRatio,1.5));
+  renderer.setSize(innerWidth,innerHeight);
+  scene=new THREE.Scene();
+  camera=new THREE.PerspectiveCamera(50,innerWidth/innerHeight,0.1,50);
+  camera.position.z=5;
+  { const halfW=Math.tan(25*Math.PI/180)*5*camera.aspect, halfH=Math.tan(25*Math.PI/180)*5;
+    base.x=Math.min(1.15,halfW*0.5); base.y=-halfH*0.55; }
+  scene.add(new THREE.AmbientLight(0xffffff,0.8));
+  const dl=new THREE.DirectionalLight(0xffffff,0.9); dl.position.set(2,3,4); scene.add(dl);
+
+  const M=c=>new THREE.MeshLambertMaterial({color:c});
+  const glow=new THREE.MeshBasicMaterial({color:S.color});
+  pet=new THREE.Group();
+  const body=new THREE.Mesh(new THREE.SphereGeometry(0.42,16,12),M(S.color)); body.scale.set(1,0.9,1.1); pet.add(body);
+  const head=new THREE.Mesh(new THREE.SphereGeometry(0.3,16,12),M(0xffffff)); head.position.set(0,0.5,0.15); pet.add(head);
+  for(const s of[-1,1]){
+    const ear=new THREE.Mesh(new THREE.ConeGeometry(0.09,0.3,6),M(S.color)); ear.position.set(s*0.18,0.82,0.1); ear.rotation.z=-s*0.25; pet.add(ear);
+    const eye=new THREE.Mesh(new THREE.SphereGeometry(0.055,8,8),new THREE.MeshBasicMaterial({color:0x111111})); eye.position.set(s*0.12,0.55,0.42); pet.add(eye);
+    const sh=new THREE.Mesh(new THREE.SphereGeometry(0.02,6,6),new THREE.MeshBasicMaterial({color:0xffffff})); sh.position.set(s*0.12+0.02,0.58,0.46); pet.add(sh);
+    const w=new THREE.Mesh(new THREE.ConeGeometry(0.28,0.8,3),new THREE.MeshLambertMaterial({color:S.color,transparent:true,opacity:0.85,side:THREE.DoubleSide}));
+    w.position.set(s*0.45,0.15,-0.1); w.rotation.z=s*1.3; w.userData.s=s; pet.add(w); wings.push(w);
+  }
+  const horn=new THREE.Mesh(new THREE.ConeGeometry(0.06,0.26,6),glow); horn.position.set(0,0.88,0.22); pet.add(horn);
+  for(let i=0;i<5;i++){
+    const r=0.14-i*0.02;
+    const b=new THREE.Mesh(new THREE.SphereGeometry(r,8,8),i==4?glow:M(S.color)); b.position.set(0,-0.15,-0.5-i*0.17); pet.add(b); tail.push(b);
+  }
+  scene.add(pet);
+  applyLevel();
+}
+function applyLevel(){ const s=0.55+Math.min(S.lvl,10)*0.06; pet.scale.setScalar(s); }
+
+function loop(t){
+  requestAnimationFrame(loop);
+  const k=t/1000;
+  const bob=Math.sin(k*2)*0.05;
+  pet.position.set(base.x+tilt.x*0.5,base.y+bob+tilt.y*0.3+happy*0.15,0);
+  pet.rotation.y=-0.5+Math.sin(k)*0.15+tilt.x*0.3;
+  pet.rotation.x=-0.1+tilt.y*0.2;
+  wings.forEach(w=>{ w.rotation.x=Math.sin(k*(happy>0?14:5))*0.35; });
+  tail.forEach((b,i)=>{ b.position.x=Math.sin(k*3+i*0.7)*0.1*(i+1)*0.5; });
+  if(happy>0) happy-=0.02;
+  renderer.render(scene,camera); _f++;
+}
+
+// ---------- tap ----------
+const ray=new THREE.Raycaster(), v2=new THREE.Vector2();
+function tap(e){
+  const p=e.touches?e.touches[0]:e;
+  v2.set(p.clientX/innerWidth*2-1,-(p.clientY/innerHeight)*2+1);
+  ray.setFromCamera(v2,camera);
+  if(ray.intersectObject(pet,true).length){ happy=1; gain(1); toast(["💖","✨","🔥 يحبك!","😺"][Math.random()*4|0]); }
+}
+// ---------- progress ----------
+function need(l){ return 10+l*8; }
+function gain(xp){
+  S.xp+=xp; S.pets=(S.pets||0)+1; S.mp=(S.mp||0)+1;
+  if(S.xp>=need(S.lvl)){ S.xp=0; S.lvl++; applyLevel(); toast("⭐ ترقية! مستوى "+S.lvl); }
+  const m=MISSIONS[S.mi]; 
+  if(m && S.mp>=m.n){ S.coins+=m.r; toast("✅ مهمة خلصت +"+m.r+" 🪙"); S.mi++; S.mp=0; }
+  save(); ui();
+}
+function ui(){
+  $("pname").textContent=S.name; $("lvl").textContent=S.lvl; $("coins").textContent=S.coins;
+  $("rank").textContent=RANKS[Math.min(Math.floor((S.lvl-1)/3),4)];
+  $("fill").style.width=(S.xp/need(S.lvl)*100)+"%";
+  const m=MISSIONS[S.mi];
+  $("mission").textContent=m?`📜 المهمة: ${m.t} (${S.mp}/${m.n}) · الجائزة ${m.r} 🪙`:"🏆 خلصت كل المهام الحالية، مهام جديدة قريباً";
+}
+// الراتب: عملات كل دقيقة حسب الرتبة
+setInterval(()=>{ if(!S) return; const r=Math.floor((S.lvl-1)/3)+1; S.coins+=r*2; save(); ui(); },60000);
+
+// ---------- حالة التشخيص (تظهر أسفل الشاشة) ----------
+const dbg={cam:"-",gyro:"-",fps:0,err:""};
+let _f=0,_t=performance.now();
+setInterval(()=>{
+  const n=performance.now(); dbg.fps=Math.round(_f*1000/(n-_t)); _f=0; _t=n;
+  $("dbg").textContent=`📷 ${dbg.cam} | 🧭 ${dbg.gyro} | ${dbg.fps}fps${dbg.err?" | ⚠️ "+dbg.err:""}`;
+},1000);
+addEventListener("error",e=>{ dbg.err=(e.message||"خطأ").slice(0,80); });
+addEventListener("unhandledrejection",e=>{ dbg.err=String(e.reason).slice(0,80); });
+
+// ---------- start ----------
+$("go").onclick=async()=>{
+  const name=$("nm").value.trim()||"لاعب";
+  if(!S||S.name!==name||S.color!==color) S=(S&&S.name===name)?{...S,color}:{name,color,lvl:1,xp:0,coins:0,mi:0,mp:0};
+  save();
+  if(typeof THREE==="undefined"){ alert("مكتبة الرسم ما اتحملتش. تأكد من النت وحدّث الصفحة."); return; }
+  dbg.cam="..."; dbg.gyro="...";
+  try{
+    if(!navigator.mediaDevices) throw new Error("لازم https");
+    const st=await navigator.mediaDevices.getUserMedia({video:{facingMode:"user",width:640,height:480},audio:false});
+    $("cam").srcObject=st; try{await $("cam").play();}catch(_){}
+    $("cam").style.display="block";
+    dbg.cam="شغالة";
+  }catch(e){ dbg.cam="فشلت: "+(e.name||"")+" "+(e.message||""); toast("الكاميرا مش متاحة، هكمل بدونها"); }
+  try{
+    if(window.DeviceOrientationEvent&&DeviceOrientationEvent.requestPermission){
+      const p=await DeviceOrientationEvent.requestPermission();
+      if(p!=="granted") throw new Error("مرفوض");
+    }
+    let b0=null; dbg.gyro="مستني حركة";
+    addEventListener("deviceorientation",e=>{
+      if(e.gamma==null) return;
+      dbg.gyro="شغال";
+      if(!b0) b0={g:e.gamma,b:e.beta};
+      tilt.x=Math.max(-1,Math.min(1,(e.gamma-b0.g)/30));
+      tilt.y=Math.max(-1,Math.min(1,(e.beta-b0.b)/30));
+    });
+  }catch(e){ dbg.gyro="فشل: "+(e.message||e); }
+  $("start").remove(); $("hud").hidden=false; $("mission").hidden=false;
+  build(); ui();
+  addEventListener("pointerdown",tap);
+  addEventListener("resize",()=>{renderer.setSize(innerWidth,innerHeight);camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();});
+  requestAnimationFrame(loop);
+};
+</script>
+</body>
+</html>
