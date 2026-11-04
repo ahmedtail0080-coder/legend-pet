@@ -72,6 +72,7 @@ function toast(m){ const t=$("toast"); t.textContent=m; t.style.opacity=1; setTi
 // ---------- 3D ----------
 let renderer,scene,camera,pet,wings=[],tail=[],base={x:1.15,y:-1.55},tilt={x:0,y:0},happy=0,t0=0;
 let mixer=null; const clock=new THREE.Clock();
+let cutLocalY=null; const clipPlane=new THREE.Plane(new THREE.Vector3(0,1,0),1e9);
 function build(){
   renderer=new THREE.WebGLRenderer({canvas:$("gl"),alpha:true,antialias:false});
   renderer.setPixelRatio(Math.min(devicePixelRatio,1.5));
@@ -110,21 +111,21 @@ function applyLevel(){ const s=0.55+Math.min(S.lvl,10)*0.06; pet.scale.setScalar
 // ---------- مجسم 3D حقيقي (اختياري): ملف pet.glb جنب index.html ----------
 function loadScript(u){ return new Promise((ok,no)=>{ const s=document.createElement("script"); s.src=u; s.onload=ok; s.onerror=()=>no(new Error("المكتبة ما اتحملتش")); document.head.appendChild(s); }); }
 async function loadModel(){
-  dbg.model="بيدوّر على pet.glb";
+  dbgInfo.model="بيدوّر على pet.glb";
   try{
     const h=await fetch("pet.glb",{method:"HEAD",cache:"no-store"});
-    if(!h.ok){ dbg.model="مفيش مجسم (الشكل البسيط)"; return; }
-  }catch(e){ dbg.model="مفيش مجسم (الشكل البسيط)"; return; }
+    if(!h.ok){ dbgInfo.model="مفيش مجسم (الشكل البسيط)"; return; }
+  }catch(e){ dbgInfo.model="مفيش مجسم (الشكل البسيط)"; return; }
   try{
     if(!THREE.GLTFLoader){
       try{ await loadScript("https://unpkg.com/three@0.128.0/examples/js/loaders/GLTFLoader.js"); }
       catch(e){ await loadScript("https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"); }
     }
-    dbg.model="بيحمّل...";
+    dbgInfo.model="بيحمّل...";
     const gltf=await new Promise((ok,no)=>new THREE.GLTFLoader().load("pet.glb",ok,undefined,no));
     const m=gltf.scene;
     const box=new THREE.Box3().setFromObject(m), size=box.getSize(new THREE.Vector3()), c=box.getCenter(new THREE.Vector3());
-    const k=1.3/Math.max(size.y,0.001);                 // نخلي طول المجسم 1.3 وحدة
+    const k=0.9/Math.max(size.y,0.001);                 // نخلي طول المجسم 1.3 وحدة
     m.scale.multiplyScalar(k); m.position.set(-c.x*k,-c.y*k,-c.z*k);
     const holder=new THREE.Group(); holder.add(m);
     while(pet.children.length) pet.remove(pet.children[0]);
@@ -132,9 +133,15 @@ async function loadModel(){
     pet.add(holder);
     scene.add(new THREE.HemisphereLight(0xffffff,0x445566,0.9));
     renderer.outputEncoding=THREE.sRGBEncoding;
+    // نقص القاعدة الدايرية اللي تحت المجسم (ممكن تضبطها من الرابط: ?cut=0.12 ، أو ?cut=0 لإلغاء القص)
+    const cq=parseFloat(new URLSearchParams(location.search).get("cut")), cut=isNaN(cq)?0.09:cq;
+    if(cut>0){
+      renderer.localClippingEnabled=true; cutLocalY=-0.45+cut*0.9;
+      m.traverse(o=>{ if(o.isMesh){ (Array.isArray(o.material)?o.material:[o.material]).forEach(mt=>{ mt.clippingPlanes=[clipPlane]; mt.needsUpdate=true; }); } });
+    }
     if(gltf.animations&&gltf.animations.length){ mixer=new THREE.AnimationMixer(m); mixer.clipAction(gltf.animations[0]).play(); }
-    dbg.model="شغال ✓ ("+((gltf.animations&&gltf.animations.length)||0)+" حركة)";
-  }catch(e){ dbg.model="فشل: "+String(e.message||e).slice(0,40); }
+    dbgInfo.model="شغال ✓ ("+((gltf.animations&&gltf.animations.length)||0)+" حركة)";
+  }catch(e){ dbgInfo.model="فشل: "+String(e.message||e).slice(0,40); }
 }
 
 function loop(t){
@@ -150,6 +157,7 @@ function loop(t){
   cur.x+=(gx-cur.x)*0.25; cur.y+=(gy-cur.y)*0.25; cur.s+=(gs-cur.s)*0.15;
   pet.scale.setScalar(cur.s);
   pet.position.set(cur.x,cur.y+bob+happy*0.15,0);
+  if(cutLocalY!==null) clipPlane.constant=-(pet.position.y+cutLocalY*cur.s);
   pet.rotation.y=-0.5+Math.sin(k)*0.15+tilt.x*0.3;
   pet.rotation.x=-0.1+tilt.y*0.2;
   wings.forEach(w=>{ w.rotation.x=Math.sin(k*(happy>0?14:5))*0.35; });
@@ -186,14 +194,14 @@ function ui(){
 setInterval(()=>{ if(!S) return; const r=Math.floor((S.lvl-1)/3)+1; S.coins+=r*2; save(); ui(); },60000);
 
 // ---------- حالة التشخيص (تظهر أسفل الشاشة) ----------
-const dbg={cam:"-",gyro:"-",track:"مقفول",model:"-",fps:0,err:""};
+const dbgInfo={cam:"-",gyro:"-",track:"مقفول",model:"-",fps:0,err:""};
 let _f=0,_t=performance.now();
 setInterval(()=>{
-  const n=performance.now(); dbg.fps=Math.round(_f*1000/(n-_t)); _f=0; _t=n;
-  $("dbg").textContent=`📷 ${dbg.cam} | 🧭 ${dbg.gyro} | 🙂 ${dbg.track} | 🐲 ${dbg.model} | ${dbg.fps}fps${dbg.err?" | ⚠️ "+dbg.err:""}`;
+  const n=performance.now(); dbgInfo.fps=Math.round(_f*1000/(n-_t)); _f=0; _t=n;
+  $("dbg").textContent=`📷 ${dbgInfo.cam} | 🧭 ${dbgInfo.gyro} | 🙂 ${dbgInfo.track} | 🐲 ${dbgInfo.model} | ${dbgInfo.fps}fps${dbgInfo.err?" | ⚠️ "+dbgInfo.err:""}`;
 },1000);
-addEventListener("error",e=>{ dbg.err=(e.message||"خطأ").slice(0,80); });
-addEventListener("unhandledrejection",e=>{ dbg.err=String(e.reason).slice(0,80); });
+addEventListener("error",e=>{ dbgInfo.err=(e.message||"خطأ").slice(0,80); });
+addEventListener("unhandledrejection",e=>{ dbgInfo.err=String(e.reason).slice(0,80); });
 
 // ---------- تتبع الوش (اختياري) ----------
 const cur={x:null,y:0,s:1};
@@ -211,9 +219,9 @@ function trkStep(now){
   const v=$("cam");
   if(v.readyState<2||!v.videoWidth) return;
   if(now-trk.last<70) return; trk.last=now;
-  let r; try{ r=trk.det.detectForVideo(v,now); }catch(e){ dbg.track="خطأ: "+String(e.message||e).slice(0,40); return; }
+  let r; try{ r=trk.det.detectForVideo(v,now); }catch(e){ dbgInfo.track="خطأ: "+String(e.message||e).slice(0,40); return; }
   const d=r&&r.detections&&r.detections[0];
-  if(!d||!d.boundingBox){ dbg.track="شغال (مش شايف وشك)"; return; }
+  if(!d||!d.boundingBox){ dbgInfo.track="شغال (مش شايف وشك)"; return; }
   const bb=d.boundingBox;
   // تحويل من بكسلات الفيديو إلى الشاشة (الفيديو مقلوب كالمرآة وبقص cover)
   const W=innerWidth,H=innerHeight,vw=v.videoWidth,vh=v.videoHeight;
@@ -229,20 +237,20 @@ function trkStep(now){
   const wy=-((fcy+0.9*fw)-H/2)*wpp+0.4*ts;
   wx=Math.max(-halfW*0.85,Math.min(halfW*0.85,wx));
   trk.tx=wx; trk.ty=wy; trk.ts=ts;
-  trk.seen=now; dbg.track="شغال ✓";
+  trk.seen=now; dbgInfo.track="شغال ✓";
 }
 $("trk").onclick=async e=>{
   e.stopPropagation();
-  if(trk.on){ trk.on=false; $("trk").textContent="🙂 تتبع الوش: مقفول"; dbg.track="مقفول"; return; }
+  if(trk.on){ trk.on=false; $("trk").textContent="🙂 تتبع الوش: مقفول"; dbgInfo.track="مقفول"; return; }
   if(!$("cam").srcObject){ toast("الكاميرا لازم تكون شغالة"); return; }
   if(!trk.det){
     if(trk.loading) return;
-    trk.loading=true; dbg.track="بيحمّل..."; $("trk").textContent="⏳ بيحمّل...";
+    trk.loading=true; dbgInfo.track="بيحمّل..."; $("trk").textContent="⏳ بيحمّل...";
     try{ trk.det=await trkLoad(); }
-    catch(err){ dbg.track="فشل التحميل: "+String(err.message||err).slice(0,40); $("trk").textContent="🙂 تتبع الوش: مقفول"; trk.loading=false; toast("التتبع ما اشتغلش"); return; }
+    catch(err){ dbgInfo.track="فشل التحميل: "+String(err.message||err).slice(0,40); $("trk").textContent="🙂 تتبع الوش: مقفول"; trk.loading=false; toast("التتبع ما اشتغلش"); return; }
     trk.loading=false;
   }
-  trk.on=true; $("trk").textContent="🙂 تتبع الوش: شغال"; dbg.track="شغال";
+  trk.on=true; $("trk").textContent="🙂 تتبع الوش: شغال"; dbgInfo.track="شغال";
 };
 
 // ---------- start ----------
@@ -251,28 +259,28 @@ $("go").onclick=async()=>{
   if(!S||S.name!==name||S.color!==color) S=(S&&S.name===name)?{...S,color}:{name,color,lvl:1,xp:0,coins:0,mi:0,mp:0};
   save();
   if(typeof THREE==="undefined"){ alert("مكتبة الرسم ما اتحملتش. تأكد من النت وحدّث الصفحة."); return; }
-  dbg.cam="..."; dbg.gyro="...";
+  dbgInfo.cam="..."; dbgInfo.gyro="...";
   try{
     if(!navigator.mediaDevices) throw new Error("لازم https");
     const st=await navigator.mediaDevices.getUserMedia({video:{facingMode:"user",width:640,height:480},audio:false});
     $("cam").srcObject=st; try{await $("cam").play();}catch(_){}
     $("cam").style.display="block";
-    dbg.cam="شغالة";
-  }catch(e){ dbg.cam="فشلت: "+(e.name||"")+" "+(e.message||""); toast("الكاميرا مش متاحة، هكمل بدونها"); }
+    dbgInfo.cam="شغالة";
+  }catch(e){ dbgInfo.cam="فشلت: "+(e.name||"")+" "+(e.message||""); toast("الكاميرا مش متاحة، هكمل بدونها"); }
   try{
     if(window.DeviceOrientationEvent&&DeviceOrientationEvent.requestPermission){
       const p=await DeviceOrientationEvent.requestPermission();
       if(p!=="granted") throw new Error("مرفوض");
     }
-    let b0=null; dbg.gyro="مستني حركة";
+    let b0=null; dbgInfo.gyro="مستني حركة";
     addEventListener("deviceorientation",e=>{
       if(e.gamma==null) return;
-      dbg.gyro="شغال";
+      dbgInfo.gyro="شغال";
       if(!b0) b0={g:e.gamma,b:e.beta};
       tilt.x=Math.max(-1,Math.min(1,(e.gamma-b0.g)/30));
       tilt.y=Math.max(-1,Math.min(1,(e.beta-b0.b)/30));
     });
-  }catch(e){ dbg.gyro="فشل: "+(e.message||e); }
+  }catch(e){ dbgInfo.gyro="فشل: "+(e.message||e); }
   $("start").remove(); $("hud").hidden=false; $("mission").hidden=false; $("trk").hidden=false;
   build(); ui();
   addEventListener("pointerdown",tap);
