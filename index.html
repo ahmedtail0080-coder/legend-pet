@@ -205,24 +205,33 @@ addEventListener("unhandledrejection",e=>{ dbgInfo.err=String(e.reason).slice(0,
 
 // ---------- تتبع الوش (اختياري) ----------
 const cur={x:null,y:0,s:1};
-const trk={on:false,loading:false,det:null,last:0,seen:0,tx:0,ty:0,ts:1};
-const MP="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+const trk={on:false,loading:false,det:null,kind:"",last:0,seen:0,tx:0,ty:0,ts:1,busy:false};
 const MODEL="https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite";
-async function trkLoad(){
-  const m=await import(MP+"/vision_bundle.mjs");
-  const fs=await m.FilesetResolver.forVisionTasks(MP+"/wasm");
-  const mk=d=>m.FaceDetector.createFromOptions(fs,{baseOptions:{modelAssetPath:MODEL,delegate:d},runningMode:"VIDEO",minDetectionConfidence:0.5});
-  try{ return await mk("GPU"); }catch(e){ return await mk("CPU"); }
+const short=e=>String((e&&e.message)||e).replace(/\s+/g," ").slice(0,90);
+// الطريقة 2: مكتبة MediaPipe (بتجرّب إصدارين، وبتكتب مرحلة الفشل)
+async function trkLoadMP(){
+  let lastErr="";
+  for(const ver of ["0.10.14","0.10.9"]){
+    const MP="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@"+ver;
+    let m,fs;
+    try{ dbgInfo.track="تحميل المكتبة "+ver; m=await import(MP+"/vision_bundle.mjs"); }catch(e){ lastErr="المكتبة "+ver+": "+short(e); continue; }
+    try{ fs=await m.FilesetResolver.forVisionTasks(MP+"/wasm"); }catch(e){ lastErr="wasm "+ver+": "+short(e); continue; }
+    for(const d of ["GPU","CPU"]){
+      try{ dbgInfo.track="تشغيل "+d+" "+ver; return await m.FaceDetector.createFromOptions(fs,{baseOptions:{modelAssetPath:MODEL,delegate:d},runningMode:"VIDEO",minDetectionConfidence:0.5}); }
+      catch(e){ lastErr=d+" "+ver+": "+short(e); }
+    }
+  }
+  throw new Error(lastErr);
 }
-function trkStep(now){
-  if(!trk.on||!trk.det) return;
+// الطريقة 1: كشف الوش المدمج في كروم (لو متاح: من غير تحميل أي حاجة)
+async function trkLoad(){
+  if("FaceDetector" in window){
+    try{ const d=new FaceDetector({fastMode:true,maxDetectedFaces:1}); await d.detect($("cam")); trk.kind="native"; return d; }catch(e){}
+  }
+  trk.kind="mp"; return await trkLoadMP();
+}
+function applyFace(bb,now){
   const v=$("cam");
-  if(v.readyState<2||!v.videoWidth) return;
-  if(now-trk.last<70) return; trk.last=now;
-  let r; try{ r=trk.det.detectForVideo(v,now); }catch(e){ dbgInfo.track="خطأ: "+String(e.message||e).slice(0,40); return; }
-  const d=r&&r.detections&&r.detections[0];
-  if(!d||!d.boundingBox){ dbgInfo.track="شغال (مش شايف وشك)"; return; }
-  const bb=d.boundingBox;
   // تحويل من بكسلات الفيديو إلى الشاشة (الفيديو مقلوب كالمرآة وبقص cover)
   const W=innerWidth,H=innerHeight,vw=v.videoWidth,vh=v.videoHeight;
   const sc=Math.max(W/vw,H/vh), ox=(vw*sc-W)/2, oy=(vh*sc-H)/2;
@@ -232,12 +241,30 @@ function trkStep(now){
   const wpp=2*Math.tan(25*Math.PI/180)*5/H;        // وحدات العالم لكل بكسل
   const halfW=Math.tan(25*Math.PI/180)*5*(W/H);
   const ts=Math.min(Math.max(0.95*fw*wpp,0.3),2.2);
-  // مكان الكتف التقريبي: على يمين الشاشة وتحت الوش
-  let wx=(fcx+0.8*fw-W/2)*wpp;
+  let wx=(fcx+0.8*fw-W/2)*wpp;                      // مكان الكتف التقريبي: يمين الوش وتحته
   const wy=-((fcy+0.9*fw)-H/2)*wpp+0.4*ts;
   wx=Math.max(-halfW*0.85,Math.min(halfW*0.85,wx));
-  trk.tx=wx; trk.ty=wy; trk.ts=ts;
-  trk.seen=now; dbgInfo.track="شغال ✓";
+  trk.tx=wx; trk.ty=wy; trk.ts=ts; trk.seen=now;
+  dbgInfo.track="شغال ✓"+(trk.kind==="native"?" (مدمج)":" (MP)");
+}
+function trkStep(now){
+  if(!trk.on||!trk.det||trk.busy) return;
+  const v=$("cam");
+  if(v.readyState<2||!v.videoWidth) return;
+  if(now-trk.last<70) return; trk.last=now;
+  if(trk.kind==="native"){
+    trk.busy=true;
+    trk.det.detect(v).then(fs=>{
+      trk.busy=false;
+      if(!fs.length){ dbgInfo.track="شغال (مش شايف وشك)"; return; }
+      const b=fs[0].boundingBox; applyFace({originX:b.x,originY:b.y,width:b.width,height:b.height},performance.now());
+    }).catch(e=>{ trk.busy=false; dbgInfo.track="خطأ: "+short(e); });
+    return;
+  }
+  let r; try{ r=trk.det.detectForVideo(v,now); }catch(e){ dbgInfo.track="خطأ: "+short(e); return; }
+  const d=r&&r.detections&&r.detections[0];
+  if(!d||!d.boundingBox){ dbgInfo.track="شغال (مش شايف وشك)"; return; }
+  applyFace(d.boundingBox,now);
 }
 $("trk").onclick=async e=>{
   e.stopPropagation();
@@ -247,7 +274,7 @@ $("trk").onclick=async e=>{
     if(trk.loading) return;
     trk.loading=true; dbgInfo.track="بيحمّل..."; $("trk").textContent="⏳ بيحمّل...";
     try{ trk.det=await trkLoad(); }
-    catch(err){ dbgInfo.track="فشل التحميل: "+String(err.message||err).slice(0,40); $("trk").textContent="🙂 تتبع الوش: مقفول"; trk.loading=false; toast("التتبع ما اشتغلش"); return; }
+    catch(err){ dbgInfo.track="فشل: "+short(err); $("trk").textContent="🙂 تتبع الوش: مقفول"; trk.loading=false; toast("التتبع ما اشتغلش"); return; }
     trk.loading=false;
   }
   trk.on=true; $("trk").textContent="🙂 تتبع الوش: شغال"; dbgInfo.track="شغال";
