@@ -8,8 +8,7 @@
   html,body{margin:0;height:100%;overflow:hidden;background:#0b0b14;font-family:system-ui,sans-serif;color:#fff}
   video,canvas{position:fixed;inset:0;width:100%;height:100%;object-fit:cover}
   canvas{touch-action:none}
-  #cam{display:none;background:#000;transform:scaleX(-1)}
-  body{background:radial-gradient(#3a2a5a,#0b0b14)}
+  body{background:radial-gradient(ellipse at 50% 75%,#5a3a8f 0%,#1f1648 45%,#07060f 100%)}
   #hud{position:fixed;top:0;left:0;right:0;padding:10px 12px;background:linear-gradient(#000a,#0000);font-size:14px;pointer-events:none}
   #bar{height:6px;background:#fff3;border-radius:4px;margin:6px 0;overflow:hidden}
   #fill{height:100%;width:0;background:#ffd24a;transition:width .3s}
@@ -25,7 +24,6 @@
 </style>
 </head>
 <body>
-<video id="cam" playsinline muted autoplay></video>
 <canvas id="gl"></canvas>
 <div id="hud" hidden>
   <div><b id="pname"></b> · <span id="rank"></span> · مستوى <span id="lvl">1</span> · 🪙 <span id="coins">0</span></div>
@@ -45,7 +43,7 @@
     <div class="t" data-c="0xb06aff">⚡ عاصفة</div>
   </div>
   <button id="go">ابدأ</button>
-  <small>هيطلب إذن الكاميرا والحركة</small>
+  <small>هيطلب إذن الحركة (للتحكم بميل التليفون)</small>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -70,11 +68,11 @@ function toast(m){ const t=$("toast"); t.textContent=m; t.style.opacity=1; setTi
 
 // ---------- 3D ----------
 let renderer,scene,camera,pet,wings=[],tail=[],base={x:1.15,y:-1.55},tilt={x:0,y:0},happy=0,t0=0;
-let mixer=null; const clock=new THREE.Clock();
+let mixer=null; const clock=new THREE.Clock(); let dust=null;
 let cutLocalY=null; const clipPlane=new THREE.Plane(new THREE.Vector3(0,1,0),1e9);
 function build(){
   renderer=new THREE.WebGLRenderer({canvas:$("gl"),alpha:true,antialias:false});
-  renderer.setPixelRatio(Math.min(devicePixelRatio,1.5));
+  renderer.setPixelRatio(1);   // أخف على التليفونات الضعيفة (بدل 1.5)
   renderer.setSize(innerWidth,innerHeight);
   scene=new THREE.Scene();
   camera=new THREE.PerspectiveCamera(50,innerWidth/innerHeight,0.1,50);
@@ -84,6 +82,10 @@ function build(){
   scene.add(new THREE.AmbientLight(0xffffff,0.8));
   const dl=new THREE.DirectionalLight(0xffffff,0.9); dl.position.set(2,3,4); scene.add(dl);
 
+  { const n=70,pos=new Float32Array(n*3);                       // غبار سحري في الخلفية
+    for(let i=0;i<n;i++){ pos[i*3]=(Math.random()*2-1)*2.5; pos[i*3+1]=(Math.random()*2-1)*3.5; pos[i*3+2]=-1-Math.random()*3; }
+    const g=new THREE.BufferGeometry(); g.setAttribute("position",new THREE.BufferAttribute(pos,3));
+    dust=new THREE.Points(g,new THREE.PointsMaterial({color:0xcdb8ff,size:0.05,transparent:true,opacity:0.7})); scene.add(dust); }
   const M=c=>new THREE.MeshLambertMaterial({color:c});
   const glow=new THREE.MeshBasicMaterial({color:S.color});
   pet=new THREE.Group();
@@ -147,6 +149,7 @@ function loop(t){
   requestAnimationFrame(loop);
   const k=t/1000, now=performance.now(), dt=Math.min(0.05,(now-mv.last)/1000); mv.last=now;
   if(mixer) mixer.update(clock.getDelta());
+  if(dust){ dust.rotation.y=k*0.03; dust.position.y=Math.sin(k*0.3)*0.1; }
   const lf=0.55+Math.min(S.lvl,10)*0.06;
   if(cur.x===null){ cur.x=0; cur.s=lf; const b0=bounds(); mv.x=Math.max(-b0.x,Math.min(b0.x,base.x)); mv.y=Math.max(b0.bot,Math.min(b0.top,base.y)); pickTarget(); }
   cur.s+=(lf-cur.s)*0.15;
@@ -156,10 +159,11 @@ function loop(t){
   pet.scale.setScalar(cur.s);
   pet.position.set(mv.x+tilt.x*0.15,mv.y+bob+tilt.y*0.1+happy*0.15+(mv.drag?0.1:0),0);
   if(cutLocalY!==null) clipPlane.constant=-(pet.position.y+cutLocalY*cur.s);
-  const ft=walking?Math.sign(mv.vx)*0.8:0;           // يلفّ ناحية اتجاه مشيه
+  ptr.x*=0.99; ptr.y*=0.99;                           // نظره يرجع للنص بالتدريج
+  const ft=mv.drag?0:(walking?Math.sign(mv.vx)*0.8:ptr.x*0.7);   // يلفّ ناحية مشيه، أو يبصّ على صباعك
   mv.face+=(ft-mv.face)*0.1;
   pet.rotation.y=mv.face+Math.sin(k)*0.12+tilt.x*0.2;
-  pet.rotation.x=-0.1+tilt.y*0.15;
+  pet.rotation.x=-0.1+tilt.y*0.15+ptr.y*0.25;
   wings.forEach(w=>{ w.rotation.x=Math.sin(k*(happy>0?14:5))*0.35; });
   tail.forEach((b,i)=>{ b.position.x=Math.sin(k*3+i*0.7)*0.1*(i+1)*0.5; });
   if(happy>0) happy-=0.02;
@@ -171,12 +175,14 @@ const ray=new THREE.Raycaster(), v2=new THREE.Vector2();
 function hitPet(px,py){ v2.set(px/innerWidth*2-1,-(py/innerHeight)*2+1); ray.setFromCamera(v2,camera); return ray.intersectObject(pet,true).length>0; }
 function initDrag(){
   addEventListener("pointerdown",e=>{
+    ptr.x=e.clientX/innerWidth*2-1; ptr.y=e.clientY/innerHeight*2-1;
     if(e.target.closest&&e.target.closest("button")) return;
     if(!hitPet(e.clientX,e.clientY)) return;
     const w=toWorld(e.clientX,e.clientY);
     mv.drag=true; mv.moved=0; mv.sx=e.clientX; mv.sy=e.clientY; mv.gx=mv.x-w.x; mv.gy=mv.y-w.y; mv.vx=0;
   });
   addEventListener("pointermove",e=>{
+    ptr.x=e.clientX/innerWidth*2-1; ptr.y=e.clientY/innerHeight*2-1;
     if(!mv.drag) return;
     mv.moved=Math.max(mv.moved,Math.hypot(e.clientX-mv.sx,e.clientY-mv.sy));
     const w=toWorld(e.clientX,e.clientY), h=worldHalf();
@@ -211,17 +217,18 @@ function ui(){
 setInterval(()=>{ if(!S) return; const r=Math.floor((S.lvl-1)/3)+1; S.coins+=r*2; save(); ui(); },60000);
 
 // ---------- حالة التشخيص (تظهر أسفل الشاشة) ----------
-const dbgInfo={cam:"-",gyro:"-",track:"مقفول",model:"-",fps:0,err:""};
+const dbgInfo={gyro:"-",model:"-",fps:0,err:""};
 let _f=0,_t=performance.now();
 setInterval(()=>{
   const n=performance.now(); dbgInfo.fps=Math.round(_f*1000/(n-_t)); _f=0; _t=n;
-  $("dbg").textContent=`📷 ${dbgInfo.cam} | 🧭 ${dbgInfo.gyro} | 🐲 ${dbgInfo.model} | ${dbgInfo.fps}fps${dbgInfo.err?" | ⚠️ "+dbgInfo.err:""}`;
+  $("dbg").textContent=`🧭 ${dbgInfo.gyro} | 🐲 ${dbgInfo.model} | ${dbgInfo.fps}fps${dbgInfo.err?" | ⚠️ "+dbgInfo.err:""}`;
 },1000);
 addEventListener("error",e=>{ dbgInfo.err=(e.message||"خطأ").slice(0,80); });
 addEventListener("unhandledrejection",e=>{ dbgInfo.err=String(e.reason).slice(0,80); });
 
 // ---------- حركة التنين: بيتسحب بصباعك وبيتمشى لوحده ----------
 const cur={x:null,y:0,s:1};
+const ptr={x:0,y:0};
 const mv={x:0,y:0,tx:0,ty:0,wait:1.5,drag:false,gx:0,gy:0,face:0,vx:0,last:performance.now(),moved:0,sx:0,sy:0};
 function worldHalf(){ const hh=Math.tan(25*Math.PI/180)*5; return {w:hh*camera.aspect,h:hh}; }
 function toWorld(px,py){ const h=worldHalf(); return {x:(px/innerWidth*2-1)*h.w, y:-(py/innerHeight*2-1)*h.h}; }
@@ -245,14 +252,7 @@ $("go").onclick=async()=>{
   if(!S||S.name!==name||S.color!==color) S=(S&&S.name===name)?{...S,color}:{name,color,lvl:1,xp:0,coins:0,mi:0,mp:0};
   save();
   if(typeof THREE==="undefined"){ alert("مكتبة الرسم ما اتحملتش. تأكد من النت وحدّث الصفحة."); return; }
-  dbgInfo.cam="..."; dbgInfo.gyro="...";
-  try{
-    if(!navigator.mediaDevices) throw new Error("لازم https");
-    const st=await navigator.mediaDevices.getUserMedia({video:{facingMode:"user",width:640,height:480},audio:false});
-    $("cam").srcObject=st; try{await $("cam").play();}catch(_){}
-    $("cam").style.display="block";
-    dbgInfo.cam="شغالة";
-  }catch(e){ dbgInfo.cam="فشلت: "+(e.name||"")+" "+(e.message||""); toast("الكاميرا مش متاحة، هكمل بدونها"); }
+  dbgInfo.gyro="...";
   try{
     if(window.DeviceOrientationEvent&&DeviceOrientationEvent.requestPermission){
       const p=await DeviceOrientationEvent.requestPermission();
