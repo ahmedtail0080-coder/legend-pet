@@ -32,7 +32,6 @@
   <div id="bar"><div id="fill"></div></div>
 </div>
 <div id="mission" hidden></div>
-<button id="trk" hidden style="position:fixed;top:52px;left:12px;z-index:4;padding:8px 12px;font-size:13px;border-radius:10px;background:#000a;color:#fff;border:1px solid #fff4">🙂 تتبع الوش: مقفول</button>
 <div id="toast"></div>
 <div id="dbg" style="position:fixed;bottom:62px;left:12px;right:12px;font-size:11px;color:#fff;background:#0008;border-radius:8px;padding:4px 8px;text-align:center;pointer-events:none;z-index:4;direction:rtl"></div>
 
@@ -125,7 +124,7 @@ async function loadModel(){
     const gltf=await new Promise((ok,no)=>new THREE.GLTFLoader().load("pet.glb",ok,undefined,no));
     const m=gltf.scene;
     const box=new THREE.Box3().setFromObject(m), size=box.getSize(new THREE.Vector3()), c=box.getCenter(new THREE.Vector3());
-    const k=0.9/Math.max(size.y,0.001);                 // نخلي طول المجسم 1.3 وحدة
+    const k=0.9/Math.max(size.y,0.001);                 // نخلي طول المجسم 0.9 وحدة
     m.scale.multiplyScalar(k); m.position.set(-c.x*k,-c.y*k,-c.z*k);
     const holder=new THREE.Group(); holder.add(m);
     while(pet.children.length) pet.remove(pet.children[0]);
@@ -146,33 +145,51 @@ async function loadModel(){
 
 function loop(t){
   requestAnimationFrame(loop);
-  const k=t/1000;
-  const bob=Math.sin(k*2)*0.05;
-  trkStep(performance.now());
+  const k=t/1000, now=performance.now(), dt=Math.min(0.05,(now-mv.last)/1000); mv.last=now;
   if(mixer) mixer.update(clock.getDelta());
   const lf=0.55+Math.min(S.lvl,10)*0.06;
-  let gx=base.x+tilt.x*0.5, gy=base.y+tilt.y*0.3, gs=lf;
-  if(trk.on&&performance.now()-trk.seen<800){ gx=trk.tx; gy=trk.ty; gs=trk.ts*lf/1.15; }
-  if(cur.x===null){ cur.x=gx; cur.y=gy; cur.s=gs; }
-  cur.x+=(gx-cur.x)*0.25; cur.y+=(gy-cur.y)*0.25; cur.s+=(gs-cur.s)*0.15;
+  if(cur.x===null){ cur.x=0; cur.s=lf; const b0=bounds(); mv.x=Math.max(-b0.x,Math.min(b0.x,base.x)); mv.y=Math.max(b0.bot,Math.min(b0.top,base.y)); pickTarget(); }
+  cur.s+=(lf-cur.s)*0.15;
+  stepMove(dt);                                       // من غير قص بالقوة: لو سيبته في أي حتة يفضل فيها ويتمشى منها
+  const walking=!mv.drag&&Math.abs(mv.vx)>0.3;
+  const bob=Math.sin(k*2)*0.05+(walking?Math.sin(k*9)*0.03:0);
   pet.scale.setScalar(cur.s);
-  pet.position.set(cur.x,cur.y+bob+happy*0.15,0);
+  pet.position.set(mv.x+tilt.x*0.15,mv.y+bob+tilt.y*0.1+happy*0.15+(mv.drag?0.1:0),0);
   if(cutLocalY!==null) clipPlane.constant=-(pet.position.y+cutLocalY*cur.s);
-  pet.rotation.y=-0.5+Math.sin(k)*0.15+tilt.x*0.3;
-  pet.rotation.x=-0.1+tilt.y*0.2;
+  const ft=walking?Math.sign(mv.vx)*0.8:0;           // يلفّ ناحية اتجاه مشيه
+  mv.face+=(ft-mv.face)*0.1;
+  pet.rotation.y=mv.face+Math.sin(k)*0.12+tilt.x*0.2;
+  pet.rotation.x=-0.1+tilt.y*0.15;
   wings.forEach(w=>{ w.rotation.x=Math.sin(k*(happy>0?14:5))*0.35; });
   tail.forEach((b,i)=>{ b.position.x=Math.sin(k*3+i*0.7)*0.1*(i+1)*0.5; });
   if(happy>0) happy-=0.02;
   renderer.render(scene,camera); _f++;
 }
 
-// ---------- tap ----------
+// ---------- لمس وسحب ----------
 const ray=new THREE.Raycaster(), v2=new THREE.Vector2();
-function tap(e){
-  const p=e.touches?e.touches[0]:e;
-  v2.set(p.clientX/innerWidth*2-1,-(p.clientY/innerHeight)*2+1);
-  ray.setFromCamera(v2,camera);
-  if(ray.intersectObject(pet,true).length){ happy=1; gain(1); toast(["💖","✨","🔥 يحبك!","😺"][Math.random()*4|0]); }
+function hitPet(px,py){ v2.set(px/innerWidth*2-1,-(py/innerHeight)*2+1); ray.setFromCamera(v2,camera); return ray.intersectObject(pet,true).length>0; }
+function initDrag(){
+  addEventListener("pointerdown",e=>{
+    if(e.target.closest&&e.target.closest("button")) return;
+    if(!hitPet(e.clientX,e.clientY)) return;
+    const w=toWorld(e.clientX,e.clientY);
+    mv.drag=true; mv.moved=0; mv.sx=e.clientX; mv.sy=e.clientY; mv.gx=mv.x-w.x; mv.gy=mv.y-w.y; mv.vx=0;
+  });
+  addEventListener("pointermove",e=>{
+    if(!mv.drag) return;
+    mv.moved=Math.max(mv.moved,Math.hypot(e.clientX-mv.sx,e.clientY-mv.sy));
+    const w=toWorld(e.clientX,e.clientY), h=worldHalf();
+    mv.x=Math.max(-(h.w-0.15),Math.min(h.w-0.15,w.x+mv.gx));
+    mv.y=Math.max(-(h.h-0.15),Math.min(h.h-0.15,w.y+mv.gy));
+  });
+  const up=()=>{
+    if(!mv.drag) return;
+    mv.drag=false;
+    if(mv.moved<10){ happy=1; gain(1); toast(["💖","✨","🔥 يحبك!","😺"][Math.random()*4|0]); }  // لمسة خفيفة = دلع
+    mv.wait=3; pickTarget();                                                                    // يستنى 3 ثواني ويرجع يتمشى
+  };
+  addEventListener("pointerup",up); addEventListener("pointercancel",up);
 }
 // ---------- progress ----------
 function need(l){ return 10+l*8; }
@@ -198,87 +215,29 @@ const dbgInfo={cam:"-",gyro:"-",track:"مقفول",model:"-",fps:0,err:""};
 let _f=0,_t=performance.now();
 setInterval(()=>{
   const n=performance.now(); dbgInfo.fps=Math.round(_f*1000/(n-_t)); _f=0; _t=n;
-  $("dbg").textContent=`📷 ${dbgInfo.cam} | 🧭 ${dbgInfo.gyro} | 🙂 ${dbgInfo.track} | 🐲 ${dbgInfo.model} | ${dbgInfo.fps}fps${dbgInfo.err?" | ⚠️ "+dbgInfo.err:""}`;
+  $("dbg").textContent=`📷 ${dbgInfo.cam} | 🧭 ${dbgInfo.gyro} | 🐲 ${dbgInfo.model} | ${dbgInfo.fps}fps${dbgInfo.err?" | ⚠️ "+dbgInfo.err:""}`;
 },1000);
 addEventListener("error",e=>{ dbgInfo.err=(e.message||"خطأ").slice(0,80); });
 addEventListener("unhandledrejection",e=>{ dbgInfo.err=String(e.reason).slice(0,80); });
 
-// ---------- تتبع الوش (اختياري) ----------
+// ---------- حركة التنين: بيتسحب بصباعك وبيتمشى لوحده ----------
 const cur={x:null,y:0,s:1};
-const trk={on:false,loading:false,det:null,kind:"",last:0,seen:0,tx:0,ty:0,ts:1,busy:false};
-const MODEL="https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite";
-const short=e=>String((e&&e.message)||e).replace(/\s+/g," ").slice(0,90);
-// الطريقة 2: مكتبة MediaPipe (بتجرّب إصدارين، وبتكتب مرحلة الفشل)
-async function trkLoadMP(){
-  let lastErr="";
-  for(const ver of ["0.10.14","0.10.9"]){
-    const MP="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@"+ver;
-    let m,fs;
-    try{ dbgInfo.track="تحميل المكتبة "+ver; m=await import(MP+"/vision_bundle.mjs"); }catch(e){ lastErr="المكتبة "+ver+": "+short(e); continue; }
-    try{ fs=await m.FilesetResolver.forVisionTasks(MP+"/wasm"); }catch(e){ lastErr="wasm "+ver+": "+short(e); continue; }
-    for(const d of ["GPU","CPU"]){
-      try{ dbgInfo.track="تشغيل "+d+" "+ver; return await m.FaceDetector.createFromOptions(fs,{baseOptions:{modelAssetPath:MODEL,delegate:d},runningMode:"VIDEO",minDetectionConfidence:0.5}); }
-      catch(e){ lastErr=d+" "+ver+": "+short(e); }
-    }
-  }
-  throw new Error(lastErr);
+const mv={x:0,y:0,tx:0,ty:0,wait:1.5,drag:false,gx:0,gy:0,face:0,vx:0,last:performance.now(),moved:0,sx:0,sy:0};
+function worldHalf(){ const hh=Math.tan(25*Math.PI/180)*5; return {w:hh*camera.aspect,h:hh}; }
+function toWorld(px,py){ const h=worldHalf(); return {x:(px/innerWidth*2-1)*h.w, y:-(py/innerHeight*2-1)*h.h}; }
+function bounds(){
+  const h=worldHalf(), s=cur.s||1;
+  return {x:Math.max(0.1,h.w-0.5*s), top:Math.max(0.1,h.h-0.45*s-0.45), bot:-Math.max(0.1,h.h-0.45*s-0.7)};
 }
-// الطريقة 1: كشف الوش المدمج في كروم (لو متاح: من غير تحميل أي حاجة)
-async function trkLoad(){
-  if("FaceDetector" in window){
-    try{ const d=new FaceDetector({fastMode:true,maxDetectedFaces:1}); await d.detect($("cam")); trk.kind="native"; return d; }catch(e){}
-  }
-  trk.kind="mp"; return await trkLoadMP();
+function pickTarget(){ const b=bounds(); mv.tx=(Math.random()*2-1)*b.x; mv.ty=b.bot+Math.random()*(b.top-b.bot); }
+function stepMove(dt){
+  if(mv.drag) return;
+  if(mv.wait>0){ mv.wait-=dt; mv.vx*=0.9; return; }
+  const dx=mv.tx-mv.x, dy=mv.ty-mv.y, d=Math.hypot(dx,dy);
+  if(d<0.06){ mv.wait=1.5+Math.random()*3; pickTarget(); mv.vx=0; return; }
+  const sp=Math.min(0.55,d*1.2+0.1)*dt;           // يبطّأ لما يقرّب من هدفه
+  mv.x+=dx/d*sp; mv.y+=dy/d*sp; mv.vx=dx/d;
 }
-function applyFace(bb,now){
-  const v=$("cam");
-  // تحويل من بكسلات الفيديو إلى الشاشة (الفيديو مقلوب كالمرآة وبقص cover)
-  const W=innerWidth,H=innerHeight,vw=v.videoWidth,vh=v.videoHeight;
-  const sc=Math.max(W/vw,H/vh), ox=(vw*sc-W)/2, oy=(vh*sc-H)/2;
-  const fcx=W-((bb.originX+bb.width/2)*sc-ox);     // مركز الوش (x) على الشاشة
-  const fcy=(bb.originY+bb.height/2)*sc-oy;        // مركز الوش (y)
-  const fw=bb.width*sc;                             // عرض الوش بالبكسل
-  const wpp=2*Math.tan(25*Math.PI/180)*5/H;        // وحدات العالم لكل بكسل
-  const halfW=Math.tan(25*Math.PI/180)*5*(W/H);
-  const ts=Math.min(Math.max(0.95*fw*wpp,0.3),2.2);
-  let wx=(fcx+0.8*fw-W/2)*wpp;                      // مكان الكتف التقريبي: يمين الوش وتحته
-  const wy=-((fcy+0.9*fw)-H/2)*wpp+0.4*ts;
-  wx=Math.max(-halfW*0.85,Math.min(halfW*0.85,wx));
-  trk.tx=wx; trk.ty=wy; trk.ts=ts; trk.seen=now;
-  dbgInfo.track="شغال ✓"+(trk.kind==="native"?" (مدمج)":" (MP)");
-}
-function trkStep(now){
-  if(!trk.on||!trk.det||trk.busy) return;
-  const v=$("cam");
-  if(v.readyState<2||!v.videoWidth) return;
-  if(now-trk.last<70) return; trk.last=now;
-  if(trk.kind==="native"){
-    trk.busy=true;
-    trk.det.detect(v).then(fs=>{
-      trk.busy=false;
-      if(!fs.length){ dbgInfo.track="شغال (مش شايف وشك)"; return; }
-      const b=fs[0].boundingBox; applyFace({originX:b.x,originY:b.y,width:b.width,height:b.height},performance.now());
-    }).catch(e=>{ trk.busy=false; dbgInfo.track="خطأ: "+short(e); });
-    return;
-  }
-  let r; try{ r=trk.det.detectForVideo(v,now); }catch(e){ dbgInfo.track="خطأ: "+short(e); return; }
-  const d=r&&r.detections&&r.detections[0];
-  if(!d||!d.boundingBox){ dbgInfo.track="شغال (مش شايف وشك)"; return; }
-  applyFace(d.boundingBox,now);
-}
-$("trk").onclick=async e=>{
-  e.stopPropagation();
-  if(trk.on){ trk.on=false; $("trk").textContent="🙂 تتبع الوش: مقفول"; dbgInfo.track="مقفول"; return; }
-  if(!$("cam").srcObject){ toast("الكاميرا لازم تكون شغالة"); return; }
-  if(!trk.det){
-    if(trk.loading) return;
-    trk.loading=true; dbgInfo.track="بيحمّل..."; $("trk").textContent="⏳ بيحمّل...";
-    try{ trk.det=await trkLoad(); }
-    catch(err){ dbgInfo.track="فشل: "+short(err); $("trk").textContent="🙂 تتبع الوش: مقفول"; trk.loading=false; toast("التتبع ما اشتغلش"); return; }
-    trk.loading=false;
-  }
-  trk.on=true; $("trk").textContent="🙂 تتبع الوش: شغال"; dbgInfo.track="شغال";
-};
 
 // ---------- start ----------
 $("go").onclick=async()=>{
@@ -308,9 +267,9 @@ $("go").onclick=async()=>{
       tilt.y=Math.max(-1,Math.min(1,(e.beta-b0.b)/30));
     });
   }catch(e){ dbgInfo.gyro="فشل: "+(e.message||e); }
-  $("start").remove(); $("hud").hidden=false; $("mission").hidden=false; $("trk").hidden=false;
-  build(); ui();
-  addEventListener("pointerdown",tap);
+  $("start").remove(); $("hud").hidden=false; $("mission").hidden=false;
+  build(); ui(); toast("اسحب التنين بصباعك 👆");
+  initDrag();
   addEventListener("resize",()=>{renderer.setSize(innerWidth,innerHeight);camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();});
   requestAnimationFrame(loop);
 };
